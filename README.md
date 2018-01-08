@@ -71,4 +71,4 @@ Flume NG MongoDB sink. The source was implemented to populate JSON into MongoDB.
 
 ### Event LOG
     The sink log to  diff collection 
-    contains field   '_type'  save to 'collection_type'  else 'collection'
+    contains field   'type'  save to 'collection_type'  else 'collection'

@@ -23,7 +23,6 @@ import org.joda.time.format.DateTimeParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.mongodb.BasicDBObject;
 import com.mongodb.CommandResult;
 import com.mongodb.DB;
 import com.mongodb.DBObject;
@@ -62,7 +61,6 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 	public static final String WRAP_FIELD = "wrapField";
 	public static final String ID_FIELD = "id";
 	public static final String TIMESTAMP_FIELD = "time";
-	public static final String OPERATION = "op";
 	public static final String PK = "_id";
 	public static final char ID_SEPARATOR = ':';
 	public static final String SERVICE_NAME = "serviceName";
@@ -163,7 +161,7 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 		return status;
 	}
 
-	private void saveEvents(Map<String, List<DBObject>> eventMap) {
+	private void saveEvents(Map<String, List<DBObject>> eventMap) throws Exception {
 		if (eventMap.isEmpty()) {
 			logger.debug("eventMap is empty");
 			return;
@@ -178,8 +176,6 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 			String eventDb = entry.getKey().substring(0, separatorIndex);
 			String collectionNameVar = entry.getKey().substring(separatorIndex + 1);
 
-			// Warning: please change the WriteConcern level if you need high
-			// datum consistence.
 			DB dbRef = mongo.getDB(eventDb);
 			if (authentication_enabled) {
 				boolean authResult = dbRef.authenticate(username, password.toCharArray());
@@ -203,19 +199,11 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 					logger.error("can't get last error");
 				}
 			} catch (Exception e) {
-				if (!(e instanceof com.mongodb.MongoException.DuplicateKey)) {
-					logger.error("can't process event batch ", e);
-					logger.debug("can't process doc:{}", docs);
-				}
-				for (DBObject doc : docs) {
-					try {
-						dbRef.getCollection(collectionNameVar).insert(doc, WriteConcern.SAFE);
-					} catch (Exception ee) {
-						if (!(e instanceof com.mongodb.MongoException.DuplicateKey)) {
-							logger.error(doc.toString());
-							logger.error("can't process events, drop it!", ee);
-						}
-					}
+				if (e instanceof com.mongodb.MongoException.DuplicateKey) {
+					logger.error("can't process event batch : {}, docs: {}", e,docs);
+				}else{
+					logger.error("can't process event batch : {}", e);
+					throw e;
 				}
 			}
 		}
@@ -244,12 +232,8 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 			tx.commit();
             status = Status.READY;
 		} catch (Exception e) {
-			logger.error("can't process events, drop it!", e);
-            try {
-                tx.rollback();
-            } catch (Exception e2) {
-            	logger.error("Rollback exception", e2);
-            }
+			logger.error("can't process events, rollback!", e);
+            tx.rollback();
             status = Status.BACKOFF;
 		} finally {
 			if (tx != null) {
@@ -271,11 +255,10 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 			return ;
 		}
 
-		DBObject documentJson = new BasicDBObject();
-		documentJson.put(TIMESTAMP_FIELD, new Date());
+		eventJson.put(TIMESTAMP_FIELD, new Date());
 
 		for (Map.Entry<String, String> entry : extraInfos.entrySet()) {
-			documentJson.put(entry.getKey(), entry.getValue());
+			eventJson.put(entry.getKey(), entry.getValue());
 		}
 
 		// TODO general ID
@@ -288,16 +271,13 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 			return ;
 		}
 		String pkStr = eventJson.get(SERVICE_NAME).toString() + ID_SEPARATOR + eventJson.get(ID_FIELD).toString();
-		documentJson.put(PK, pkStr);
+		eventJson.put(PK, pkStr);
 		eventJson.removeField(ID_FIELD);
 		eventJson.removeField(SERVICE_NAME);
 
 		// 初始化 collection
 		String eventCollection = dbName + NAMESPACE_SEPARATOR + collectionName;		
-		if (eventJson.containsField(TRANS_TYPE)) {
-			documentJson.put(TRANS_TYPE, eventJson.get(TRANS_TYPE));
-			eventJson.removeField(TRANS_TYPE);
-			
+		if (eventJson.containsField(TRANS_TYPE)) {			
 			eventCollection = eventCollection + TRANS_TYPE ;
 			if (!eventMap.containsKey(eventCollection)) {
 				eventMap.put(eventCollection, new ArrayList<DBObject>());
@@ -311,14 +291,12 @@ public class MongoDBTransSink extends AbstractSink implements Configurable {
 		// get document
 		List<DBObject> documents = eventMap.get(eventCollection);
 		documents = eventMap.get(eventCollection);
-		//put log
-		documentJson.put(wrapField, eventJson);
 		
 		if (documents == null) {
 			documents = new ArrayList<DBObject>(batchSize);
 		}
 		// add  doc
-		documents.add(documentJson);
+		documents.add(eventJson);
 
 		
 	}
